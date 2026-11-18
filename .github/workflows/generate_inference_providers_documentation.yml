@@ -36,13 +36,14 @@ jobs:
         working-directory: ./scripts/inference-providers
 
       # Check changes
-      - name: Check changes
+      - name: Check changes (including newly generated files)
         run: |
-          git diff --name-only > changed_files.txt
+          git add -N -A
+          git diff --name-only HEAD > changed_files.txt
           if grep -v -E "^(scripts/inference-providers/package.json|scripts/inference-providers/pnpm-lock.yaml)$" changed_files.txt | grep -q '.'; then
-            echo "changes_detected=true" >> $GITHUB_ENV
+            echo "changes_detected=true" >> "$GITHUB_ENV"
           else
-            echo "changes_detected=false" >> $GITHUB_ENV
+            echo "changes_detected=false" >> "$GITHUB_ENV"
           fi
           rm changed_files.txt
 
@@ -51,39 +52,22 @@ jobs:
         if: env.changes_detected == 'false'
         run: echo "No meaningful changes. Skipping PR creation."
 
-      # Create or update Pull Request
-      - name: Create Pull Request
-        id: create_pr
+      # Keep automation read-only: produce a reviewable patch instead of using a
+      # missing privileged bot token or merging generated changes automatically.
+      - name: Prepare generated documentation patch
         if: env.changes_detected == 'true'
-        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676  # v7
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -N -A
+          git diff --binary HEAD > "$RUNNER_TEMP/inference-providers-docs.patch"
+          test -s "$RUNNER_TEMP/inference-providers-docs.patch"
+
+      - name: Upload generated documentation patch for review
+        if: env.changes_detected == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          token: ${{ secrets.TOKEN_INFERENCE_SYNC_BOT }}
-          commit-message: Update Inference Providers documentation (automated)
-          branch: update-inference-providers-docs-automated-pr
-          delete-branch: true
-          title: "[Bot] Update Inference Providers documentation"
-          body: |
-            This PR automatically upgrades the `@huggingface/tasks` and `@huggingface/inference` packages and regenerates the Inference Providers documentation by running:
-            ```sh
-            cd scripts/inference-providers
-            pnpm update @huggingface/tasks@latest @huggingface/inference@latest
-            pnpm run generate
-            ```
-
-            This PR was automatically created (and merged) by the [Update Inference Providers Documentation workflow](https://github.com/huggingface/hub-docs/blob/main/.github/workflows/generate_inference_providers_documentation.yml).
-          reviewers: |
-            Wauplin
-            hanouticelina
-
-      # Wait for PR CI checks to finish before merging.
-      # The build typically takes ~1min; 5min gives a safe buffer without needing --admin to bypass checks.
-      - name: Wait for PR CI to complete
-        if: env.changes_detected == 'true' && steps.create_pr.outputs.pull-request-number != ''
-        run: sleep 300
-
-      # Merge the Pull Request (no repo-level auto-merge setting required)
-      - name: Merge Pull Request
-        if: env.changes_detected == 'true' && steps.create_pr.outputs.pull-request-number != ''
-        env:
-          GH_TOKEN: ${{ secrets.TOKEN_INFERENCE_SYNC_BOT }}
-        run: gh pr merge --squash --delete-branch "${{ steps.create_pr.outputs.pull-request-number }}"
+          name: inference-providers-docs-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/inference-providers-docs.patch
+          if-no-files-found: error
+          retention-days: 14
